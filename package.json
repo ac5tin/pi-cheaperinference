@@ -1,0 +1,38 @@
+{
+	"name": "@ac5tin/pi-cheaperinference",
+	"version": "1.0.0",
+	"description": "CheaperInference as a first-class provider for the pi coding agent: live model catalog, real cache-aware pricing, full prompt-cache support and thinking effort levels",
+	"license": "MIT",
+	"author": "ac5tin",
+	"repository": "github:ac5tin/pi-cheaperinference",
+	"homepage": "https://github.com/ac5tin/pi-cheaperinference#readme",
+	"bugs": "https://github.com/ac5tin/pi-cheaperinference/issues",
+	"type": "module",
+	"keywords": [
+		"pi-package",
+		"pi",
+		"pi-coding-agent",
+		"cheaperinference",
+		"cheaper-inference",
+		"provider",
+		"llm"
+	],
+	"pi": {
+		"extensions": ["extensions/index.ts"]
+	},
+	"scripts": {
+		"test": "node --test test/",
+		"typecheck": "tsc --noEmit"
+	},
+	"engines": {
+		"node": ">=22.6"
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": ">=1.0.0"
+	},
+	"devDependencies": {
+		"@earendil-works/pi-coding-agent": "^1.0.2",
+		"@types/node": "^24.0.0",
+		"typescript": "^5.9.0"
+	}
+}
