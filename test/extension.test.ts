@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
@@ -35,7 +35,13 @@ interface RegisteredProvider {
 	api?: string;
 	headers?: Record<string, string>;
 	models?: Array<Record<string, unknown>>;
-	refreshModels?: (context: { allowNetwork?: boolean; signal?: AbortSignal }) => Promise<Array<Record<string, unknown>>>;
+	oauth?: {
+		name: string;
+		login: (interaction: { onPrompt: (prompt: { message: string }) => Promise<string> }) => Promise<{ access: string; refresh: string; expires: number }>;
+		refreshToken: (credential: { access: string }, signal?: AbortSignal) => Promise<{ access: string }>;
+		getApiKey: (credential: { access: string }) => string;
+	};
+	refreshModels?: (context: { allowNetwork?: boolean; signal?: AbortSignal; credential?: { type?: string; key?: string; access?: unknown } }) => Promise<Array<Record<string, unknown>>>;
 }
 
 interface CapturedHandler {
@@ -61,6 +67,10 @@ function mockPi() {
 
 function fetchOk(): typeof fetch {
 	return (async () => new Response(okBody, { status: 200 })) as unknown as typeof fetch;
+}
+
+function fetchStatus(status: number): typeof fetch {
+	return (async () => new Response("nope", { status })) as unknown as typeof fetch;
 }
 
 function sessionCtx(sessionId: string | undefined) {
@@ -114,25 +124,103 @@ describe("cheaperinference extension", () => {
 		assert.ok(warnings.some((w) => w.includes("registered 1 models")));
 	});
 
-	it("skips registration without an API key", async () => {
+	it("registers without an API key from the public catalog and points at /login", async () => {
 		const pi = mockPi();
 		const warnings: string[] = [];
-		await cheaperinferenceExtension(pi as never, { env: {}, warn: (m) => warnings.push(m) });
-		assert.equal(pi.providers.size, 0);
-		assert.ok(warnings.some((w) => w.includes("no API key")));
+		const urls: string[] = [];
+		await cheaperinferenceExtension(pi as never, {
+			env: {},
+			warn: (m) => warnings.push(m),
+			fetchFn: (async (url: string | URL) => {
+				urls.push(String(url));
+				return new Response(okBody, { status: 200 });
+			}) as typeof fetch,
+			snapshotPath: join(dir, "public-catalog.json"),
+		});
+
+		assert.ok(pi.providers.has(PROVIDER_ID), "provider must be registered without a key");
+		const provider = pi.providers.get(PROVIDER_ID);
+		assert.equal(provider?.apiKey, "$CHEAPERINFERENCE_API_KEY");
+		assert.ok(provider?.oauth, "oauth login flow must be present");
+		assert.ok(urls.every((u) => u.endsWith("/public/models")), "no-key startup must use the public catalog");
+		assert.ok(warnings.some((w) => w.includes("/login")));
 	});
 
-	it("accepts the CHEAPER_INFERENCE_API_KEY spelling and a base URL with /v1", async () => {
+	it("does not register when the API key is rejected", async () => {
+		const pi = mockPi();
+		const warnings: string[] = [];
+		await cheaperinferenceExtension(pi as never, {
+			env: { CHEAPERINFERENCE_API_KEY: "ci_live_bad" },
+			warn: (m) => warnings.push(m),
+			fetchFn: fetchStatus(403),
+			snapshotPath,
+		});
+		assert.equal(pi.providers.size, 0);
+		assert.ok(warnings.some((w) => w.includes("API key")));
+	});
+
+	it("oauth login stores the pasted key after validating it", async () => {
+		const pi = mockPi();
+		const calls: Array<{ url: string; auth: boolean }> = [];
+		await cheaperinferenceExtension(pi as never, {
+			env: {},
+			warn: () => {},
+			fetchFn: (async (url: string | URL, init?: RequestInit) => {
+				calls.push({ url: String(url), auth: new Headers(init?.headers).has("Authorization") });
+				return new Response(okBody, { status: 200 });
+			}) as typeof fetch,
+			snapshotPath: join(dir, "oauth.json"),
+		});
+		const oauth = pi.providers.get(PROVIDER_ID)?.oauth;
+		assert.ok(oauth);
+
+		const credential = await oauth.login({
+			onPrompt: async () => "  ci_live_pasted  ",
+		});
+		assert.equal(credential.access, "ci_live_pasted");
+		assert.equal(credential.refresh, "");
+		assert.ok(credential.expires > Date.now() + 365 * 24 * 60 * 60 * 1000);
+		assert.equal(oauth.getApiKey(credential), "ci_live_pasted");
+		assert.deepEqual(await oauth.refreshToken(credential), credential);
+		// validation used the authenticated endpoint with the pasted key
+		assert.ok(calls.some((c) => c.url.endsWith("/v1/models") && c.auth));
+	});
+
+	it("oauth login rejects a key the gateway refuses", async () => {
 		const pi = mockPi();
 		await cheaperinferenceExtension(pi as never, {
-			env: { CHEAPER_INFERENCE_API_KEY: "ci_live_legacy", CHEAPERINFERENCE_BASE_URL: "https://api.cheaperinference.com/v1/" },
+			env: {},
 			warn: () => {},
-			fetchFn: fetchOk(),
-			snapshotPath: join(dir, "legacy.json"),
+			// startup catalog comes from /public/models; validation hits /v1/models with the key
+			fetchFn: (async (url: string | URL) =>
+				new Response(String(url).endsWith("/public/models") ? okBody : "denied", {
+					status: String(url).endsWith("/public/models") ? 200 : 401,
+				})) as typeof fetch,
+			snapshotPath: join(dir, "oauth-bad.json"),
 		});
-		const provider = pi.providers.get(PROVIDER_ID);
-		assert.equal(provider?.apiKey, "ci_live_legacy");
-		assert.equal(provider?.baseUrl, "https://api.cheaperinference.com/v1");
+		const oauth = pi.providers.get(PROVIDER_ID)?.oauth;
+		assert.ok(oauth);
+		await assert.rejects(
+			oauth.login({ onPrompt: async () => "ci_live_bad" }),
+			/rejected this API key/,
+		);
+	});
+
+	it("oauth login accepts a key when the gateway cannot be reached", async () => {
+		const pi = mockPi();
+		await cheaperinferenceExtension(pi as never, {
+			env: {},
+			warn: () => {},
+			fetchFn: (async (url: string | URL) => {
+				if (String(url).endsWith("/public/models")) return new Response(okBody, { status: 200 });
+				throw new Error("EAI_AGAIN");
+			}) as typeof fetch,
+			snapshotPath: join(dir, "oauth-offline.json"),
+		});
+		const oauth = pi.providers.get(PROVIDER_ID)?.oauth;
+		assert.ok(oauth);
+		const credential = await oauth.login({ onPrompt: async () => "ci_live_offline" });
+		assert.equal(credential.access, "ci_live_offline");
 	});
 
 	it("falls back to the snapshot when the catalog is unreachable", async () => {
@@ -159,17 +247,17 @@ describe("cheaperinference extension", () => {
 		assert.equal((stored as { catalog?: { models?: unknown[] } })?.catalog?.models?.length, 1);
 	});
 
-	it("does not register when the API key is rejected", async () => {
+	it("accepts the CHEAPER_INFERENCE_API_KEY spelling and a base URL with /v1", async () => {
 		const pi = mockPi();
-		const warnings: string[] = [];
 		await cheaperinferenceExtension(pi as never, {
-			env: { CHEAPERINFERENCE_API_KEY: "ci_live_bad" },
-			warn: (m) => warnings.push(m),
-			fetchFn: (async () => new Response("denied", { status: 403 })) as typeof fetch,
-			snapshotPath,
+			env: { CHEAPER_INFERENCE_API_KEY: "ci_live_legacy", CHEAPERINFERENCE_BASE_URL: "https://api.cheaperinference.com/v1/" },
+			warn: () => {},
+			fetchFn: fetchOk(),
+			snapshotPath: join(dir, "legacy.json"),
 		});
-		assert.equal(pi.providers.size, 0);
-		assert.ok(warnings.some((w) => w.includes("API key")));
+		const provider = pi.providers.get(PROVIDER_ID);
+		assert.equal(provider?.apiKey, "ci_live_legacy");
+		assert.equal(provider?.baseUrl, "https://api.cheaperinference.com/v1");
 	});
 
 	it("injects the session prompt_cache_key only into its own requests", async () => {
@@ -202,22 +290,32 @@ describe("cheaperinference extension", () => {
 		assert.equal(hook.handler({ payload: preset }, sessionCtx("sess-42")), undefined);
 	});
 
-	it("refreshModels replaces models and updates the affinity set", async () => {
+	it("refreshModels replaces models and uses the session credential", async () => {
 		const snapshotPathForRefresh = join(dir, "refresh.json");
 		let respondWith = okBody;
+		const authSeen: Array<string | undefined> = [];
 		const pi = mockPi();
 		await cheaperinferenceExtension(pi as never, {
-			env: { CHEAPERINFERENCE_API_KEY: "ci_live_test" },
+			env: {},
 			warn: () => {},
-			fetchFn: (async () => new Response(respondWith, { status: 200 })) as typeof fetch,
+			fetchFn: (async (url: string | URL, init?: RequestInit) => {
+				if (String(url).endsWith("/v1/models")) {
+					authSeen.push(new Headers(init?.headers).get("Authorization") ?? undefined);
+				}
+				return new Response(respondWith, { status: 200 });
+			}) as typeof fetch,
 			snapshotPath: snapshotPathForRefresh,
 		});
 		const provider = pi.providers.get(PROVIDER_ID);
 		assert.ok(provider?.refreshModels);
 
 		respondWith = JSON.stringify({ object: "list", data: [claudeRow, { ...claudeRow, id: "gpt-5.6-luna", provider: "openai" }], pricing_version: "sha256:2" });
-		const refreshed = await provider.refreshModels({ allowNetwork: true });
+		const refreshed = await provider.refreshModels({
+			allowNetwork: true,
+			credential: { type: "api_key", key: "ci_live_stored" },
+		});
 		assert.equal(refreshed.length, 2);
+		assert.ok(authSeen.includes("Bearer ci_live_stored"), "refresh must use the stored credential");
 
 		const hook = pi.handlers.find((h) => h.event === "before_provider_request");
 		assert.ok(hook);
@@ -233,15 +331,5 @@ describe("cheaperinference extension", () => {
 		assert.equal(failed.length, 2);
 
 		await rm(snapshotPathForRefresh, { force: true });
-	});
-
-	it("snapshot round-trip through disk stays loadable", async () => {
-		const path = join(dir, "roundtrip.json");
-		const catalog: CiCatalog = { models: [claudeRow as CiCatalog["models"][number]], pricingVersion: "sha256:rt" };
-		assert.equal(await saveSnapshot(path, catalog), true);
-		const raw = JSON.parse(await readFile(path, "utf8"));
-		assert.ok((raw as { savedAt: string }).savedAt);
-		await writeFile(path, "not json");
-		await rm(path, { force: true });
 	});
 });

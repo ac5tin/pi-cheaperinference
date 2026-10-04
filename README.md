@@ -15,7 +15,9 @@ pi install git:github.com/ac5tin/pi-cheaperinference
 
 ## Setup
 
-Export your key before starting pi:
+Sign in from inside pi with `/login` — CheaperInference appears under both **"Sign in with an API key"** and **"Sign in with an account"** (same paste flow, validated against the gateway and stored in `~/.pi/agent/auth.json`). The provider registers even without a key, so it is always listed.
+
+Or skip `/login` entirely and export the key before starting pi:
 
 ```sh
 export CHEAPERINFERENCE_API_KEY=ci_live_...
@@ -25,7 +27,7 @@ export CHEAPERINFERENCE_API_KEY=ci_live_...
 
 ## What it does
 
-**Live catalog.** On startup the extension calls `GET /v1/models` with your key and registers every model that pi can drive: streamed Chat Completions, text type, streaming capable. Vision models accept images, and `capabilities.reasoning` enables thinking. Because the catalog is fetched live (and `refreshModels` re-fetches it during a session), new models show up automatically — nothing is hardcoded.
+**Live catalog.** On startup the extension calls `GET /v1/models` with your key (or the unauthenticated `/public/models` view when no key is configured yet) and registers every model that pi can drive: streamed Chat Completions, text type, streaming capable. Vision models accept images, and `capabilities.reasoning` enables thinking. Because the catalog is fetched live (and `refreshModels` re-fetches it during a session), new models show up automatically — nothing is hardcoded.
 
 **Real pricing.** Each model carries the catalog's per-million rates for input, output, **cache read** and **cache write**, plus the long-context `above_threshold` tier when the gateway publishes one. pi's cost reporting therefore tracks what the wallet is actually billed. (The wallet dashboard stays the authoritative record; the gateway may route a request to a differently-priced fallback supplier.)
 
@@ -63,7 +65,7 @@ Usage accounting matches the gateway's semantics: `prompt_tokens_details.cached_
 
 - Models whose endpoints don't include `/v1/chat/completions`, or that can't stream (e.g. `gpt-5.5-pro`, which requires non-streamed `/v1/responses`), are not registered — pi drives streaming Chat Completions.
 - If the catalog reports no context window or output cap, conservative defaults (128k / 16,384) are used, and the output cap is clamped to the context window.
-- The catalog is key-filtered: you see exactly what your key can call.
+- Without a key the model list comes from the unauthenticated public catalog (all models); with a key it is key-filtered: you see exactly what your key can call.
 
 ## Development
 

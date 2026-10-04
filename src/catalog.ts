@@ -348,10 +348,11 @@ export function resolveApiRoot(baseUrl: string): string {
 }
 
 /**
- * Fetch the model catalog with the customer key; on gateway outage or network
- * failure fall back to the unauthenticated `/public/models` view. Auth
- * rejections (401/403) are terminal: models listed without the key would not
- * be callable anyway.
+ * Fetch the model catalog. With an API key the authenticated key-filtered
+ * `/v1/models` view is used, falling back to the unauthenticated
+ * `/public/models` view on gateway outage or network failure. Without a key
+ * only the public view is requested. Auth rejections (401/403) are terminal:
+ * models listed without the key would not be callable anyway.
  */
 export async function fetchCatalog(options: FetchCatalogOptions = {}): Promise<CiCatalog> {
 	const root = resolveApiRoot(options.baseUrl ?? DEFAULT_API_ROOT);
@@ -365,6 +366,19 @@ export async function fetchCatalog(options: FetchCatalogOptions = {}): Promise<C
 		if (withAuth && options.apiKey) headers.Authorization = `Bearer ${options.apiKey}`;
 		return fetchFn(url, { headers, signal });
 	};
+
+	if (!options.apiKey) {
+		try {
+			const publicResponse = await attempt(`${root}/public/models`, false);
+			if (publicResponse.ok) return await finalizeCatalog(publicResponse, "public");
+			throw new CatalogError(`public catalog request failed (HTTP ${publicResponse.status})`, {
+				status: publicResponse.status,
+			});
+		} catch (error) {
+			if (error instanceof CatalogError) throw error;
+			throw new CatalogError(`public catalog request failed: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	}
 
 	let authStatus: number | undefined;
 	let networkError: unknown;
