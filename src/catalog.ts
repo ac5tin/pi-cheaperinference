@@ -112,6 +112,12 @@ export interface ChatModelConfig {
 	id: string;
 	name: string;
 	reasoning: boolean;
+	/**
+	 * Identity mapping for every effort level. pi only offers xhigh/max in its
+	 * thinking-level UI when thinkingLevelMap lists them explicitly; without a
+	 * map, minimal/low/medium/high still work but the two highest are hidden.
+	 */
+	thinkingLevelMap?: Record<"minimal" | "low" | "medium" | "high" | "xhigh" | "max", string>;
 	input: Array<"text" | "image">;
 	cost: ChatModelCost;
 	contextWindow: number;
@@ -121,6 +127,16 @@ export interface ChatModelConfig {
 	compat?: ChatModelCompat;
 	headers?: Record<string, string>;
 }
+
+/** CheaperInference accepts pi's full effort set verbatim as reasoning_effort. */
+export const IDENTITY_THINKING_LEVEL_MAP = {
+	minimal: "minimal",
+	low: "low",
+	medium: "medium",
+	high: "high",
+	xhigh: "xhigh",
+	max: "max",
+} as const;
 
 // ---------------------------------------------------------------------------
 // Parsing
@@ -352,6 +368,9 @@ export function catalogToChatModels(catalog: CiCatalog): ChatModelConfig[] {
 			id: model.id,
 			name: humanizeModelName(model.id),
 			reasoning: model.capabilities?.reasoning === true,
+			...(model.capabilities?.reasoning === true
+				? { thinkingLevelMap: { ...IDENTITY_THINKING_LEVEL_MAP } }
+				: {}),
 			input: model.capabilities?.vision === true ? ["text", "image"] : ["text"],
 			cost,
 			contextWindow,

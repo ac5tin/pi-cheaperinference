@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import cheaperinferenceExtension, { PROVIDER_ID } from "../extensions/index.ts";
 import { saveSnapshot } from "../src/snapshot.ts";
 import type { CiCatalog } from "../src/catalog.ts";
@@ -109,6 +110,17 @@ describe("cheaperinference extension", () => {
 		const model = provider.models?.[0];
 		assert.equal(model?.id, "claude-opus-4.6");
 		assert.equal(model?.reasoning, true);
+		// pi only surfaces xhigh/max when thinkingLevelMap lists them; assert with
+		// pi's own helper so the full effort set is contractually offered.
+		assert.deepEqual(getSupportedThinkingLevels(model as never), [
+			"off",
+			"minimal",
+			"low",
+			"medium",
+			"high",
+			"xhigh",
+			"max",
+		]);
 		assert.deepEqual(model?.compat, {
 			supportsReasoningEffort: true,
 			thinkingFormat: "openai",

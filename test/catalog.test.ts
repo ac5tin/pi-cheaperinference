@@ -170,6 +170,14 @@ describe("catalogToChatModels", () => {
 
 		assert.equal(claude?.id, "claude-opus-4.6");
 		assert.equal(claude?.reasoning, true);
+		assert.deepEqual(claude?.thinkingLevelMap, {
+			minimal: "minimal",
+			low: "low",
+			medium: "medium",
+			high: "high",
+			xhigh: "xhigh",
+			max: "max",
+		});
 		assert.deepEqual(claude?.input, ["text", "image"]);
 		assert.equal(claude?.contextWindow, 200_000);
 		assert.equal(claude?.maxTokens, 64_000);
@@ -216,6 +224,7 @@ describe("catalogToChatModels", () => {
 		assert.equal(model?.contextWindow, 128_000);
 		assert.equal(model?.maxTokens, 16_384);
 		assert.equal(model?.reasoning, false);
+		assert.equal(model?.thinkingLevelMap, undefined);
 		assert.deepEqual(model?.input, ["text"]);
 
 		const clamped = catalogToChatModels(
@@ -296,6 +305,8 @@ describe("public catalog shape (GET /public/models)", () => {
 		assert.equal(models.length, 1);
 		const model = models[0]!;
 		assert.equal(model.reasoning, true);
+		assert.equal(model.thinkingLevelMap?.xhigh, "xhigh");
+		assert.equal(model.thinkingLevelMap?.max, "max");
 		assert.deepEqual(model.input, ["text"]);
 		assert.equal(model.contextWindow, 128_000);
 		assert.equal(model.maxTokens, 32_768);
