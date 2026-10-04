@@ -160,26 +160,86 @@ function parseCapabilities(value: unknown): Partial<CiCapabilities> | undefined 
 	};
 }
 
+/**
+ * The public `/public/models` view flattens capabilities onto the row as
+ * `supports_*` booleans. Only fields that are present are set so an absent
+ * `supports_streaming` stays "unknown" (and does not exclude the model).
+ */
+function capabilitiesFromFlatRow(r: Record<string, unknown>): Partial<CiCapabilities> | undefined {
+	const flags: Array<[keyof CiCapabilities, string]> = [
+		["vision", "supports_vision"],
+		["video", "supports_video"],
+		["reasoning", "supports_reasoning"],
+		["streaming", "supports_streaming"],
+		["image_edit", "supports_image_edit"],
+	];
+	const out: Partial<CiCapabilities> = {};
+	let present = false;
+	for (const [key, source] of flags) {
+		if (r[source] === undefined) continue;
+		out[key] = r[source] === true;
+		present = true;
+	}
+	return present ? out : undefined;
+}
+
+/**
+ * The public view also flattens pricing onto the row (top-level
+ * `input_per_million`, `cache_read_per_million`, and `*_above_threshold`
+ * tier fields) instead of the authenticated view's nested `pricing` object.
+ * Normalize both spellings; rates are validated later by toRate.
+ */
+function pricingFromRow(r: Record<string, unknown>): CiPricing | undefined {
+	if (r.pricing && typeof r.pricing === "object") return r.pricing as CiPricing;
+	const flatKeys = [
+		"input_per_million",
+		"output_per_million",
+		"cache_read_per_million",
+		"cache_write_per_million",
+		"input_token_price_threshold",
+		"input_per_million_above_threshold",
+		"output_per_million_above_threshold",
+	];
+	if (!flatKeys.some((key) => r[key] !== undefined)) return undefined;
+	const threshold = toPositiveInt(r.input_token_price_threshold);
+	const hasTier = r.input_per_million_above_threshold !== undefined || r.output_per_million_above_threshold !== undefined;
+	return {
+		input_per_million: r.input_per_million as CiPricing["input_per_million"],
+		output_per_million: r.output_per_million as CiPricing["output_per_million"],
+		cache_read_per_million: (r.cache_read_per_million ?? undefined) as CiPricing["cache_read_per_million"],
+		cache_write_per_million: (r.cache_write_per_million ?? undefined) as CiPricing["cache_write_per_million"],
+		input_token_price_threshold: threshold,
+		above_threshold: hasTier
+			? {
+					input_token_price_threshold: threshold,
+					input_per_million: r.input_per_million_above_threshold as CiAboveThreshold["input_per_million"],
+					output_per_million: r.output_per_million_above_threshold as CiAboveThreshold["output_per_million"],
+				}
+			: null,
+	};
+}
+
 function parseModelRow(row: unknown): CiModel | null {
 	if (!row || typeof row !== "object") return null;
 	const r = row as Record<string, unknown>;
+	if (r.is_visible === false) return null;
 	const id = asString(r.id) ?? asString(r.model_id);
 	if (!id) return null;
-	const pricing = r.pricing;
+	const capabilities = parseCapabilities(r.capabilities) ?? capabilitiesFromFlatRow(r);
 	return {
 		id,
 		object: asString(r.object) ?? undefined,
-		type: asString(r.type) ?? undefined,
-		provider: asString(r.provider),
+		type: asString(r.type) ?? asString(r.model_type) ?? undefined,
+		provider: asString(r.provider) ?? asString(r.provider_name),
 		owned_by: asString(r.owned_by) ?? undefined,
 		endpoint: asString(r.endpoint) ?? undefined,
 		supported_endpoints: Array.isArray(r.supported_endpoints)
 			? r.supported_endpoints.filter((s): s is string => typeof s === "string")
 			: undefined,
-		capabilities: parseCapabilities(r.capabilities),
+		capabilities,
 		context_length: toPositiveInt(r.context_length),
 		max_output_tokens: toPositiveInt(r.max_output_tokens),
-		pricing: pricing && typeof pricing === "object" ? (pricing as CiPricing) : undefined,
+		pricing: pricingFromRow(r),
 	};
 }
 

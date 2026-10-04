@@ -241,6 +241,115 @@ describe("resolveApiRoot", () => {
 	});
 });
 
+describe("public catalog shape (GET /public/models)", () => {
+	// Trimmed from the live endpoint: flat capabilities/pricing, model_type,
+	// provider_name, flat above-threshold tier fields.
+	const publicRow = {
+		id: "aion-labs-aion-3-0",
+		context_length: 128000,
+		max_output_tokens: 32768,
+		aliases: [],
+		model_type: "text",
+		endpoint: "/v1/chat/completions",
+		supported_endpoints: ["/v1/chat/completions", "/v1/completions", "/v1/responses", "/v1/messages"],
+		input_per_million: "1.650000",
+		output_per_million: "3.300000",
+		cache_read_per_million: "0.412500",
+		cache_write_per_million: "1.650000",
+		discount_percent: "45.00",
+		provider_name: "Aion Labs",
+		supports_vision: false,
+		supports_video: false,
+		supports_reasoning: true,
+		supports_streaming: true,
+		supports_image_edit: false,
+		is_free: false,
+		input_token_price_threshold: 128000,
+		input_per_million_above_threshold: "2.200000",
+		output_per_million_above_threshold: "4.400000",
+	};
+
+	it("parses flat rows: capabilities, pricing, provider_name, model_type", () => {
+		const catalog = parseCatalog({ models: [publicRow] }, "public");
+		assert.equal(catalog.models.length, 1);
+		const model = catalog.models[0]!;
+		assert.equal(model.type, "text");
+		assert.equal(model.provider, "Aion Labs");
+		assert.equal(model.capabilities?.reasoning, true);
+		assert.equal(model.capabilities?.streaming, true);
+		assert.equal(model.capabilities?.vision, false);
+		const rates = ratesFromPricing(model.pricing);
+		assert.deepEqual(rates && { ...rates, tiers: undefined }, {
+			input: 1.65,
+			output: 3.3,
+			cacheRead: 0.4125,
+			cacheWrite: 1.65,
+			tiers: undefined,
+		});
+		assert.equal(rates?.tiers?.[0]?.inputTokensAbove, 128_000);
+		assert.equal(rates?.tiers?.[0]?.input, 2.2);
+		assert.equal(rates?.tiers?.[0]?.output, 4.4);
+	});
+
+	it("maps flat rows to chat models with full compat wiring", () => {
+		const models = catalogToChatModels(parseCatalog({ models: [publicRow] }, "public"));
+		assert.equal(models.length, 1);
+		const model = models[0]!;
+		assert.equal(model.reasoning, true);
+		assert.deepEqual(model.input, ["text"]);
+		assert.equal(model.contextWindow, 128_000);
+		assert.equal(model.maxTokens, 32_768);
+		assert.equal(model.cost.cacheRead, 0.4125);
+		assert.equal(model.compat?.supportsReasoningEffort, true);
+		assert.equal(model.compat?.thinkingFormat, "openai");
+	});
+
+	it("claude detection works via provider_name", () => {
+		const catalog = parseCatalog(
+			{ models: [{ ...publicRow, id: "marketplace-alias-x", provider_name: "Anthropic" }] },
+			"public",
+		);
+		assert.equal(isClaudeModel(catalog.models[0]!), true);
+		const models = catalogToChatModels(catalog);
+		assert.equal(models[0]?.compat?.cacheControlFormat, "anthropic");
+	});
+
+	it("skips rows hidden with is_visible: false and rows with no pricing at all", () => {
+		const catalog = parseCatalog(
+			{
+				models: [
+					publicRow,
+					{ ...publicRow, id: "hidden-model", is_visible: false },
+					{ ...publicRow, id: "no-pricing", input_per_million: undefined, output_per_million: undefined },
+				],
+			},
+			"public",
+		);
+		assert.deepEqual(catalog.models.map((m) => m.id), ["aion-labs-aion-3-0", "no-pricing"]);
+		assert.equal(catalogToChatModels(catalog).length, 1);
+	});
+
+	it("treats an absent supports_streaming as unknown, not false", () => {
+		const row = { ...publicRow };
+		delete (row as Record<string, unknown>).supports_streaming;
+		const models = catalogToChatModels(parseCatalog({ models: [row] }, "public"));
+		assert.equal(models.length, 1);
+	});
+
+	it("filters public non-chat endpoint sets (video/image-only models)", () => {
+		const catalog = parseCatalog(
+			{
+				models: [
+					{ ...publicRow, id: "veo-thing", model_type: "video", supported_endpoints: ["/v1/videos/generations"] },
+					{ ...publicRow, id: "image-thing", model_type: "image", supported_endpoints: ["/v1/images/generations"] },
+				],
+			},
+			"public",
+		);
+		assert.equal(catalogToChatModels(catalog).length, 0);
+	});
+});
+
 describe("fetchCatalog", () => {
 	const okBody = { object: "list", data: [claudeRow], pricing_version: "sha256:1" };
 
